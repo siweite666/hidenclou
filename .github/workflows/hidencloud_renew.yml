@@ -14,7 +14,7 @@ concurrency:
 jobs:
   renew:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     permissions:
       actions: write
       contents: read
@@ -31,15 +31,15 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y xvfb x11-utils xdotool scrot fonts-noto-cjk
-          pip install seleniumbase beautifulsoup4 pyvirtualdisplay pynacl
+          pip install seleniumbase beautifulsoup4 pynacl
           seleniumbase install chromedriver
 
-      - name: 🌐 设置代理 (sing-box)
-        continue-on-error: true
-        env:
-          NODE_LINK: ${{ secrets.NODE_LINK }}
-        run: |
-          bash <(wget -qO- https://main.ssss.nyc.mn/setup_proxy.sh)
+      # WARP：把机房 IP 换成 WARP 出口 —— Turnstile 在机房 IP 下不发起挑战
+      # 用 fscarmen/warp-on-actions，不需要自备节点链接
+      - name: 🌐 设置 WARP 代理
+        uses: fscarmen/warp-on-actions@v1.1
+        with:
+          stack: dual
 
       - name: Run Renew Script
         env:
@@ -47,10 +47,17 @@ jobs:
           TG_BOT: ${{ secrets.TG_CHAT_ID }},${{ secrets.TG_BOT_TOKEN }}
           GH_PAT: ${{ secrets.GH_PAT }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          # setup_proxy.sh 成功时经 $GITHUB_ENV 注入 PROXY_SERVER；失败/未配置则为空 → 自动直连
-          PROXY_URL: ${{ env.PROXY_SERVER }}
         run: |
           python hidencloud_renew.py
+
+      - name: Upload Debug Screenshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hidencloud-debug-${{ github.run_number }}
+          path: hidencloud_debug_*.png
+          retention-days: 3
+          if-no-files-found: ignore
 
       - name: 🧹 清理旧的工作流运行记录
         if: always()
