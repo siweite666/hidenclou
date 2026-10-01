@@ -1,0 +1,39 @@
+name: HidenCloud Auto Renew
+
+on:
+  schedule:
+    # 每天北京时间早上 9 点运行 (UTC 1:00)
+    - cron: '0 1 * * *'
+  workflow_dispatch: # 允许手动运行
+
+# 防止多个任务同时运行导致更新 Secret 冲突
+concurrency:
+  group: hidencloud-renew
+  cancel-in-progress: true
+
+jobs:
+  renew:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install Dependencies
+        run: |
+          pip install curl_cffi beautifulsoup4 pynacl
+
+      - name: Run Renew Script
+        env:
+          HIDEN_COOKIE: ${{ secrets.HIDEN_COOKIE }}
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          GH_PAT: ${{ secrets.GH_PAT }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          python hidencloud_renew.py
+
