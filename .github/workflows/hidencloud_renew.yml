@@ -27,41 +27,6 @@ jobs:
         run: |
           pip install curl_cffi beautifulsoup4 pynacl
 
-      - name: DEBUG dump renew page
-        env:
-          HIDEN_COOKIE: ${{ secrets.HIDEN_COOKIE }}
-        run: |
-          cat > /tmp/dbg.py <<'PYEOF'
-          import os, re
-          from curl_cffi import requests
-          s = requests.Session(impersonate="chrome110")
-          for item in os.environ["HIDEN_COOKIE"].split(';'):
-              if '=' in item:
-                  k, v = item.strip().split('=', 1)
-                  s.cookies.set(k, v, domain="dash.hidencloud.com")
-          m = s.get("https://dash.hidencloud.com/service/221433/manage", timeout=25)
-          t = m.text
-          L = t.split("\n")
-          print("MANAGE", m.status_code, len(t), "lines", len(L))
-          # ① 找 turnstile widget 附近
-          for i, line in enumerate(L):
-              if "cf-turnstile" in line and "class=" in line:
-                  lo, hi = max(0, i-45), min(len(L), i+12)
-                  print("--- widget @L%d ---" % i)
-                  print("\n".join(L[lo:hi]))
-                  break
-          # ② 所有 form action + 前后 8 行
-          for i, line in enumerate(L):
-              if re.search(r"<form\s", line, re.I):
-                  print("--- form @L%d ---" % i)
-                  print("\n".join(L[i:i+16]))
-          # ③ renew 按钮 / 链接
-          for i, line in enumerate(L):
-              if re.search(r"renew", line, re.I):
-                  print("--- renew @L%d ---" % i)
-                  print(line.strip()[:300])
-          PYEOF
-          python /tmp/dbg.py
       - name: Run Renew Script
         env:
           HIDEN_COOKIE: ${{ secrets.HIDEN_COOKIE }}
