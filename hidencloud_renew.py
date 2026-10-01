@@ -23,13 +23,6 @@ import platform
 from datetime import datetime, timezone, timedelta
 from urllib.request import Request, urlopen
 
-# ── Linux 虚拟显示器 ──────────────────────────────────────────
-if platform.system().lower() == "linux":
-    from pyvirtualdisplay import Display
-    _disp = Display(visible=False, size=(1920, 1080))
-    _disp.start()
-    os.environ["DISPLAY"] = _disp.new_display_var
-
 from seleniumbase import SB
 
 # ── 配置 ─────────────────────────────────────────────────────
@@ -128,7 +121,8 @@ def main():
 
     results = []
     try:
-        with SB(uc=True, headless=False,
+        # xvfb=True：SeleniumBase 自带虚拟桌面（物理点击过盾的前提）
+        with SB(uc=True, xvfb=True,
                 proxy=PROXY_URL if PROXY_URL else None,
                 chromium_arg="--no-sandbox,--disable-dev-shm-usage,--disable-gpu") as sb:
 
@@ -138,6 +132,16 @@ def main():
             time.sleep(4)
             title = sb.get_title()
             log(f"📄 标题: {title}")
+
+            # 首屏过盾：系统级物理点击（WARP/代理出口 IP 下 CF 才会出挑战）
+            try:
+                log("🛡️ 尝试系统级物理点击过盾...")
+                sb.uc_gui_click_captcha()
+                time.sleep(8)
+                title = sb.get_title()
+                log(f"   点击后标题: {title}")
+            except Exception as e:
+                log(f"   过盾点击跳过/已完成: {str(e)[:120]}")
 
             src0 = sb.get_page_source()
             if "Block" in title or "Connection Blocked" in src0[:800]:
@@ -269,8 +273,29 @@ def renew_one(sb, sid):
     if "/login" in sb.get_current_url():
         return False, "cookie 失效，跳转到登录页"
 
+    # 打开续期 modal（widget 在 modal 内，隐藏容器里 Turnstile 不跑挑战）
+    try:
+        sb.execute_script("""
+            const b=[...document.querySelectorAll('button,a')]
+              .find(x=>/renew/i.test(x.textContent||'') && /renew/i.test((x.getAttribute('data-modal-target')||'')+(x.getAttribute('onclick')||'')+(x.getAttribute('href')||'')));
+            if(b) b.click();
+        """)
+        time.sleep(2)
+    except Exception:
+        pass
+    # 物理点击过盾
+    try:
+        sb.uc_gui_click_captcha()
+        time.sleep(6)
+    except Exception:
+        pass
+
+    try:
+        sb.save_screenshot("hidencloud_debug_renew_page.png")
+    except Exception:
+        pass
     st = sb.execute_script("""
-        const w=document.querySelector('.cf-turnstile');
+    const w=document.querySelector('.cf-turnstile');
         const f=document.querySelector('[name="cf-turnstile-response"]');
         return JSON.stringify({widget:!!w, iframe:!!document.querySelector('iframe[src*="challenges.cloudflare"]'),
           field:!!f, tokenLen: f?(f.value||'').length:0, form:!!document.querySelector('form[action*="/renew"]')});
@@ -298,7 +323,17 @@ def renew_one(sb, sid):
                 pass
         time.sleep(3)
     if not token:
-        return False, "Turnstile 未出 token（出口 IP 不被信任，需换节点）"
+        try:
+            sb.save_screenshot("hidencloud_debug_no_token.png")
+        except Exception:
+            pass
+        _w = sb.execute_script("""
+            const w=document.querySelector('.cf-turnstile');
+            return w ? JSON.stringify({rect: w.getBoundingClientRect().toJSON(),
+              html: w.innerHTML.slice(0,200)}) : 'none';
+        """)
+        log(f"   widget 细节: {_w}")
+        return False, "Turnstile 未出 token（出口 IP 不被信任）"
 
     # 带 token 提交
     res = sb.execute_async_script("""
