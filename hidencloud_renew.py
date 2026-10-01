@@ -35,8 +35,9 @@ from seleniumbase import SB
 # ── 配置 ─────────────────────────────────────────────────────
 HIDEN_COOKIE = os.environ.get("HIDEN_COOKIE", "").strip()
 PROXY_URL = os.environ.get("PROXY_URL", "").strip()          # socks5://127.0.0.1:1080
-TG_BOT_TOKEN, TG_CHAT_ID = (os.environ.get("TG_BOT", ",,") + ",,").split(",")[:2]
-TG_BOT_TOKEN, TG_CHAT_ID = TG_BOT_TOKEN.strip(), TG_CHAT_ID.strip()
+# 格式：TG_BOT="<chat_id>,<bot_token>"（与 workflow 一致）
+_p1, _p2 = (os.environ.get("TG_BOT", ",,") + ",,").split(",")[:2]
+TG_CHAT_ID, TG_BOT_TOKEN = _p1.strip(), _p2.strip()
 GH_PAT = os.environ.get("GH_PAT", "").strip()
 GH_REPO = os.environ.get("GITHUB_REPOSITORY", "").strip()
 
@@ -164,16 +165,41 @@ def main():
             n = inject_cookies(sb, HIDEN_COOKIE)
             log(f"🍪 注入 {n} 个 cookie")
 
-            # ── 取服务列表 ───────────────────────────────────
-            sb.uc_open_with_reconnect(f"{BASE_URL}/dashboard", reconnect_time=6)
-            time.sleep(4)
-            ids = sorted(set(re.findall(r"/service/(\d+)/manage", sb.get_page_source())))
+            # ── 取服务列表（注入后重新加载，否则还是游客页）──
+            ids = []
+            for attempt in range(3):
+                sb.uc_open_with_reconnect(f"{BASE_URL}/dashboard", reconnect_time=6)
+                time.sleep(5)
+                cur = sb.get_current_url()
+                src = sb.get_page_source()
+                log(f"   [%d] URL={cur}  页面 {len(src)} 字节  标题={sb.get_title()[:60]}" % attempt)
+                if "Security Verification" in src:
+                    log("   !! 被站点 CF 拦（Security Verification）")
+                    time.sleep(8)
+                    continue
+                if "/login" in cur or "/auth/login" in cur:
+                    log("   !! 跳转到登录页 —— cookie 失效")
+                    break
+                ids = sorted(set(re.findall(r"/service/(\d+)/manage", src)))
+                if ids:
+                    break
+                # 兜底：从任意 /service/<id> 链接里取
+                ids = sorted(set(re.findall(r"/service/(\d+)", src)))
+                if ids:
+                    break
+                time.sleep(5)
             log(f"📋 服务: {ids}")
             if not ids:
-                if "login" in sb.get_current_url():
-                    msg = "❌ HidenCloud: cookie 失效，需要重新登录"
-                else:
-                    msg = "❌ HidenCloud: 未找到任何服务"
+                src = sb.get_page_source()
+                hint = []
+                if "Security Verification" in src:
+                    hint.append("被 CF 安全验证拦截（出口 IP 需要更换）")
+                if "/login" in sb.get_current_url():
+                    hint.append("cookie 失效")
+                if "Game Server Hosting" in src and len(src) < 200000:
+                    hint.append("停留在首页（cookie 未生效）")
+                msg = ("❌ HidenCloud: 未找到任何服务"
+                       + ("\n原因：" + "；".join(hint) if hint else ""))
                 log(msg); send_tg(msg); sys.exit(1)
 
             # 取用户名 / 余额
