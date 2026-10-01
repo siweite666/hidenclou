@@ -32,32 +32,36 @@ jobs:
           HIDEN_COOKIE: ${{ secrets.HIDEN_COOKIE }}
         run: |
           cat > /tmp/dbg.py <<'PYEOF'
-          import os, re, sys
+          import os, re
           from curl_cffi import requests
           s = requests.Session(impersonate="chrome110")
           for item in os.environ["HIDEN_COOKIE"].split(';'):
               if '=' in item:
                   k, v = item.strip().split('=', 1)
                   s.cookies.set(k, v, domain="dash.hidencloud.com")
-          r = s.get("https://dash.hidencloud.com/dashboard", timeout=25)
-          print("DASH", r.status_code, len(r.text))
-          ids = re.findall(r"/service/(\d+)/manage", r.text)
-          print("SERVICE_IDS", sorted(set(ids)))
-          if not ids:
-              sys.exit(0)
-          sid = sorted(set(ids))[0]
-          m = s.get(f"https://dash.hidencloud.com/service/{sid}/manage", timeout=25)
-          print("MANAGE", m.status_code, len(m.text))
-          open("/tmp/manage.html", "w").write(m.text)
+          m = s.get("https://dash.hidencloud.com/service/221433/manage", timeout=25)
+          t = m.text
+          L = t.split("\n")
+          print("MANAGE", m.status_code, len(t), "lines", len(L))
+          # ① 找 turnstile widget 附近
+          for i, line in enumerate(L):
+              if "cf-turnstile" in line and "class=" in line:
+                  lo, hi = max(0, i-45), min(len(L), i+12)
+                  print("--- widget @L%d ---" % i)
+                  print("\n".join(L[lo:hi]))
+                  break
+          # ② 所有 form action + 前后 8 行
+          for i, line in enumerate(L):
+              if re.search(r"<form\s", line, re.I):
+                  print("--- form @L%d ---" % i)
+                  print("\n".join(L[i:i+16]))
+          # ③ renew 按钮 / 链接
+          for i, line in enumerate(L):
+              if re.search(r"renew", line, re.I):
+                  print("--- renew @L%d ---" % i)
+                  print(line.strip()[:300])
           PYEOF
           python /tmp/dbg.py
-          echo "=== turnstile 痕迹 ==="
-          grep -o -i 'cf-turnstile\|challenges.cloudflare[^"]*\|data-sitekey="[^"]*"\|turnstile[^"<]\{0,40\}' /tmp/manage.html 2>/dev/null | sort | uniq -c | sort -rn | head -20
-          echo "=== form 标签 ==="
-          grep -o -i '<form[^>]*>' /tmp/manage.html 2>/dev/null | head -8
-          echo "=== 含 turnstile 的行 ==="
-          grep -i -n 'turnstile' /tmp/manage.html 2>/dev/null | head -12 | cut -c1-260
-
       - name: Run Renew Script
         env:
           HIDEN_COOKIE: ${{ secrets.HIDEN_COOKIE }}
