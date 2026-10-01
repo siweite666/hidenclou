@@ -189,6 +189,16 @@ def main():
                     break
                 time.sleep(5)
             log(f"📋 服务: {ids}")
+            # 诊断：页面到底是登录页还是控制台
+            _src = sb.get_page_source()
+            _probe = []
+            for _kw in ("Sign in", "Log in", "登录", "Login", "Sign In"):
+                if _kw in _src:
+                    _probe.append(_kw)
+            log("   页面关键词: %s" % (_probe or "无登录字样"))
+            log("   含 /service/ : %s   含 manage: %s" % ("/service/" in _src, "manage" in _src))
+            _t = sb.execute_script("return document.body ? document.body.innerText.slice(0,400) : '';")
+            log("   可见文本: %s" % re.sub(r"\s+", " ", str(_t))[:300])
             if not ids:
                 src = sb.get_page_source()
                 hint = []
