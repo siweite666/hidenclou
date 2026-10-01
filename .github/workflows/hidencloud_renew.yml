@@ -47,7 +47,8 @@ jobs:
           TG_BOT: ${{ secrets.TG_CHAT_ID }},${{ secrets.TG_BOT_TOKEN }}
           GH_PAT: ${{ secrets.GH_PAT }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          PROXY_URL: "socks5://127.0.0.1:1080"
+          # setup_proxy.sh 成功时经 $GITHUB_ENV 注入 PROXY_SERVER；失败/未配置则为空 → 自动直连
+          PROXY_URL: ${{ env.PROXY_SERVER }}
         run: |
           python hidencloud_renew.py
 
