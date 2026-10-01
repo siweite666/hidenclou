@@ -4,7 +4,7 @@ on:
   schedule:
     # 每天北京时间早上 9 点运行 (UTC 1:00)
     - cron: '0 1 * * *'
-  workflow_dispatch: # 允许手动运行
+  workflow_dispatch:
 
 # 防止多个任务同时运行导致更新 Secret 冲突
 concurrency:
@@ -14,6 +14,10 @@ concurrency:
 jobs:
   renew:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      actions: write
+      contents: read
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -21,19 +25,42 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: '3.12'
 
       - name: Install Dependencies
         run: |
-          pip install curl_cffi beautifulsoup4 pynacl
+          sudo apt-get update
+          sudo apt-get install -y xvfb x11-utils xdotool scrot fonts-noto-cjk
+          pip install seleniumbase beautifulsoup4 pyvirtualdisplay pynacl
+          seleniumbase install chromedriver
+
+      - name: 🌐 设置代理 (sing-box)
+        continue-on-error: true
+        env:
+          NODE_LINK: ${{ secrets.NODE_LINK }}
+        run: |
+          bash <(wget -qO- https://main.ssss.nyc.mn/setup_proxy.sh)
 
       - name: Run Renew Script
         env:
           HIDEN_COOKIE: ${{ secrets.HIDEN_COOKIE }}
-          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
-          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          TG_BOT: ${{ secrets.TG_CHAT_ID }},${{ secrets.TG_BOT_TOKEN }}
           GH_PAT: ${{ secrets.GH_PAT }}
           GITHUB_REPOSITORY: ${{ github.repository }}
+          PROXY_URL: "socks5://127.0.0.1:1080"
         run: |
           python hidencloud_renew.py
 
+      - name: 🧹 清理旧的工作流运行记录
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          runs=$(gh run list --workflow="${{ github.workflow }}" --limit=100 --json databaseId --jq '.[].databaseId')
+          count=0
+          for run_id in $runs; do
+            count=$((count + 1))
+            if [ $count -gt 1 ]; then
+              gh run delete $run_id || true
+            fi
+          done
