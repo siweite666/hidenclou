@@ -60,8 +60,8 @@ def send_tg(msg):
         log("⚠️ TG 未配置")
         return
     try:
-        body = json.dumps({"chat_id": TG_CHAT_ID, "text": msg,
-                           "parse_mode": "Markdown"}).encode()
+        # 用纯文本发送：报错信息里可能含 _ * ` [ 等字符，Markdown 会解析失败(400)
+        body = json.dumps({"chat_id": TG_CHAT_ID, "text": msg}).encode()
         req = Request(f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage",
                       data=body, headers={"Content-Type": "application/json"},
                       method="POST")
