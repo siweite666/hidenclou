@@ -226,18 +226,13 @@ def main():
             # ── 逐个续期 ─────────────────────────────────────
             for sid in ids:
                 log(f"🔄 服务 {sid} 申请续期...")
-                r3 = renew_one(sb, sid)
-                if len(r3) == 3:
-                    _, ok, detail = r3          # ("NOT_TIME", "未到期…")
-                    results.append((sid, "NOT_TIME", detail))
-                    log(f"   ⏸ {detail}")
-                else:
-                    ok, detail = r3
-                    log(f"   {'✅' if ok else '❌'} {detail}")
-                    results.append((sid, bool(ok), detail))
+                state, detail = renew_one(sb, sid)   # OK / NOT_TIME / FAIL
+                mark = {"OK": "✅", "NOT_TIME": "⏸"}.get(state, "❌")
+                log(f"   {mark} {detail}")
+                results.append((sid, state, detail))
 
             # ── 报告 ─────────────────────────────────────────
-            okn = sum(1 for _, o, _ in results if o is True)
+            okn = sum(1 for _, o, _ in results if o == "OK")
             waitn = sum(1 for _, o, _ in results if o == "NOT_TIME")
             badn = len(results) - okn - waitn
             lines = [f"☁️ HidenCloud 自动续费任务",
@@ -246,7 +241,7 @@ def main():
                      "━━━━━━━━━━━━━━━━━━",
                      f"📊 执行统计: 成功 {okn} | 未到期 {waitn} | 失败 {badn}", ""]
             for sid, o, d in results:
-                mark = "✅" if o is True else ("⏸" if o == "NOT_TIME" else "❌")
+                mark = {"OK": "✅", "NOT_TIME": "⏸"}.get(o, "❌")
                 lines.append(f"{mark} 服务 {sid}")
                 lines.append(f"   └ {d}")
             msg = "\n".join(lines)
@@ -283,7 +278,7 @@ def renew_one(sb, sid):
         log("   被站点 CF 拦，先过盾...")
         solve_turnstile(sb, timeout=CF_WAIT, shot="hidencloud_debug_waf_page.png")
     if "/login" in sb.get_current_url():
-        return False, "cookie 失效，跳转到登录页"
+        return "FAIL", "cookie 失效，跳转到登录页"
 
     # 点 Renew 弹 modal —— widget 在 modal 内，隐藏容器里挑战不会发起
     mr = renew_click_modal(sb, btn_texts=("Renew",))
@@ -295,7 +290,7 @@ def renew_one(sb, sid):
             sb.save_screenshot("hidencloud_debug_no_modal.png")
         except Exception:
             pass
-        return False, f"续期弹窗未出现（{mr}）"
+        return "FAIL", f"续期弹窗未出现（{mr}）"
 
     try:
         sb.save_screenshot("hidencloud_debug_renew_page.png")
@@ -320,7 +315,7 @@ def renew_one(sb, sid):
     except Exception:
         pass
     if not ok or not token:
-        return False, "Turnstile 未通过（token 未生成）"
+        return "FAIL", "Turnstile 未通过（token 未生成）"
     log(f"   ✅ token: {token[:36]}...")
 
     # 带 token 提交
@@ -345,20 +340,20 @@ def renew_one(sb, sid):
     try:
         d = json.loads(res) if isinstance(res, str) else res
     except Exception:
-        return False, f"提交响应无法解析: {str(res)[:150]}"
+        return "FAIL", f"提交响应无法解析: {str(res)[:150]}"
 
     if d.get("err"):
-        return False, f"提交异常: {d['err']}"
+        return "FAIL", f"提交异常: {d['err']}"
     txt = (d.get("text") or "").lower()
     if "turnstile" in txt:
-        return False, f"仍报 Turnstile: {d.get('text','')[:120]}"
+        return "FAIL", f"仍报 Turnstile: {d.get('text','')[:120]}"
     if "expires in" in txt or "only renew" in txt:
         mm = re.search(r"expires in (\d+) days", txt)
-        return True, f"未到期（剩余 {mm.group(1)} 天）" if mm else "未到期"
+        return "NOT_TIME", (f"未到期（剩余 {mm.group(1)} 天）" if mm else "未到期")
     if d.get("status") in (200, 201, 302) and ("invoice" in (d.get("url") or "")
                                                or "payment" in (d.get("url") or "")):
-        return True, "申请成功（已生成账单）"
-    return True, f"已提交（HTTP {d.get('status')}）"
+        return "OK", "申请成功（已生成账单）"
+    return "OK", f"已提交（HTTP {d.get('status')}）"
 
 
 if __name__ == "__main__":
