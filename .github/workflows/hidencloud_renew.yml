@@ -17,7 +17,7 @@ jobs:
     timeout-minutes: 25
     permissions:
       actions: write
-      contents: read
+      contents: write        # 保活提交需要写权限
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -58,6 +58,22 @@ jobs:
           path: hidencloud_debug_*.png
           retention-days: 3
           if-no-files-found: ignore
+
+      # 保活：仓库 60 天无活动时 GitHub 会自动暂停定时工作流。
+      # 每次运行提交一次时间戳，保持仓库活跃（eooce/Auto-Renew-HidenCloud 同款做法）。
+      - name: 🕒 保活提交（防定时工作流被暂停）
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          echo "$(TZ=Asia/Shanghai date +'%Y-%m-%d %H:%M:%S')" > time.txt
+          git add time.txt
+          if git diff --cached --quiet; then
+            echo "无变化，跳过提交"
+          else
+            git commit -m "⏱️ 保活 $(TZ=Asia/Shanghai date +'%Y-%m-%d %H:%M:%S')"
+            git push origin HEAD:${{ github.ref_name }}
+          fi
 
       - name: 🧹 清理旧的工作流运行记录
         if: always()
