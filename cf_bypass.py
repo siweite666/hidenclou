@@ -303,124 +303,120 @@ def renew_click_modal(sb, btn_texts=("Renew",), modal_marker=None,
 
     返回 "OK" | "NOT_TIME" | "NO_MODAL" | "NO_BUTTON"
     NOT_TIME：站点规则不允许（未到期），不是故障 —— 别当失败处理。
+
+    注意：SeleniumBase 的 execute_script 不是 Playwright 的 evaluate，
+    多参数语义不同 —— 统一把参数 json.dumps 后内联进表达式。
     """
-    js = """
-    (texts) => {
-        const bs = [...document.querySelectorAll('button, a')];
-        const cands = [];
-        bs.forEach(x => {
+    import json as _json
+    T = _json.dumps(list(btn_texts))
+    M = _json.dumps(list(restricted_markers))
+    MKR = _json.dumps(modal_marker)
+
+    ENUM_JS = """
+    (function(texts){
+        const out = [];
+        for (const x of document.querySelectorAll('button, a')) {
             const tx = (x.textContent || '').trim();
-            if (texts.some(t => tx.toLowerCase() === t.toLowerCase()
-                             || tx.toLowerCase().includes(t.toLowerCase()))) {
-                const r = x.getBoundingClientRect();
-                cands.push({tag: x.tagName, text: tx.slice(0, 40),
-                    cls: (x.className || '').toString().slice(0, 90),
-                    modalTarget: x.getAttribute('data-modal-target'),
-                    modalToggle: x.getAttribute('data-modal-toggle'),
-                    onclick: (x.getAttribute('onclick') || '').slice(0, 90),
-                    href: x.getAttribute('href'), type: x.getAttribute('type'),
-                    disp: getComputedStyle(x).display,
-                    vis: getComputedStyle(x).visibility,
-                    rect: [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height)]});
-            }
+            if (!tx) continue;
+            if (!texts.some(function(t){ return tx.toLowerCase().indexOf(t.toLowerCase()) >= 0; })) continue;
+            const r = x.getBoundingClientRect();
+            out.push({tag: x.tagName, text: tx.slice(0, 30),
+                cls: String(x.className || '').slice(0, 80),
+                modalTarget: x.getAttribute('data-modal-target'),
+                modalToggle: x.getAttribute('data-modal-toggle'),
+                onclick: (x.getAttribute('onclick') || '').slice(0, 80),
+                href: x.getAttribute('href'), type: x.getAttribute('type'),
+                disp: getComputedStyle(x).display,
+                rect: [Math.round(r.x), Math.round(r.y),
+                       Math.round(r.width), Math.round(r.height)]});
+        }
+        return JSON.stringify(out);
+    })(TEXTS)
+    """.strip().replace("TEXTS", T)
+
+    CLICK_JS = """
+    (function(texts){
+        const bs = Array.from(document.querySelectorAll('button, a'));
+        let b = bs.find(function(x){
+            return (x.textContent || '').trim().toLowerCase() === texts[0].toLowerCase()
+                && x.getBoundingClientRect().width > 0;
         });
-        return JSON.stringify(cands);
-    }
-    """
-    for i in range(tries):
-        if i == 0:
-            try:
-                cands = sb.execute_script(js, list(btn_texts))
-                _log("候选按钮: %s" % str(cands)[:900])
-            except Exception as e:
-                _log("枚举失败: %s" % str(e)[:120])
+        let how = 'exact';
+        if (!b) {
+            b = bs.find(function(x){
+                return (x.textContent || '').trim().toLowerCase().indexOf(texts[0].toLowerCase()) >= 0
+                    && x.getBoundingClientRect().width > 0;
+            });
+            how = 'contains';
+        }
+        if (!b) return 'NO_BUTTON';
+        b.scrollIntoView({block: 'center'});
+        b.click();
+        return 'CLICKED(' + how + '):' + (b.textContent || '').trim().slice(0, 24);
+    })(TEXTS)
+    """.strip().replace("TEXTS", T)
 
-        r = None
-        try:
-            r = sb.execute_script("""
-                (texts) => {
-                    const bs = [...document.querySelectorAll('button, a')];
-                    const b = bs.find(x => {
-                        const tx = (x.textContent || '').trim().toLowerCase();
-                        const r = x.getBoundingClientRect();
-                        return texts.some(t => tx === t.toLowerCase())
-                            && r.width > 0 && r.height > 0;
-                    }) || bs.find(x => {
-                        const tx = (x.textContent || '').trim().toLowerCase();
-                        return texts.some(t => tx.includes(t.toLowerCase()))
-                            && x.getBoundingClientRect().width > 0;
-                    });
-                    if (!b) return 'NO_BUTTON';
-                    b.scrollIntoView({block: 'center'});
-                    return 'FOUND:' + (b.textContent || '').trim().slice(0, 30);
+    BODY_JS = "return document.body ? document.body.innerText : '';"
+
+    VISIBLE_MODAL_JS = """
+    (function(){
+        const sels = ['.modal.show', '[role=dialog]', '[data-modal]',
+                      '.fixed.inset-0', '.fixed.z-50', '[id^=renew]'];
+        for (const s of sels) {
+            for (const el of document.querySelectorAll(s)) {
+                const r = el.getBoundingClientRect();
+                const st = getComputedStyle(el);
+                if (r.width > 200 && r.height > 100 && st.display !== 'none'
+                    && st.visibility !== 'hidden' && Number(st.opacity) > 0.1) {
+                    return s;
                 }
-            """, list(btn_texts))
-            _log("定位: %s" % r)
-            # 再用真实鼠标点击（Tailwind modal 用 onclick 绑定，JS click 可能不触发）
-            try:
-                sb.execute_script("""
-                    (texts) => {
-                        const bs = [...document.querySelectorAll('button, a')];
-                        const b = bs.find(x => (x.textContent || '').trim().toLowerCase()
-                            === texts[0].toLowerCase());
-                        if (b) b.click();
-                    }
-                """, list(btn_texts))
-            except Exception:
-                pass
-        except Exception as e:
-            _log("点击出错: %s" % str(e)[:100])
-        if r == "NO_BUTTON":
-            return "NO_BUTTON"
-        _log("第 %d 次点击，等弹窗..." % (i + 1))
+            }
+        }
+        return null;
+    })()
+    """.strip()
 
-        # 点完给足时间（弹窗可能延迟出现）
+    # 先枚举一次，日志留证据
+    try:
+        _log("候选按钮: %s" % str(sb.execute_script("return " + ENUM_JS))[:800])
+    except Exception as e:
+        _log("枚举失败: %s" % str(e)[:150])
+
+    for i in range(tries):
+        try:
+            r = sb.execute_script("return " + CLICK_JS)
+        except Exception as e:
+            _log("点击出错: %s" % str(e)[:120])
+            r = None
+        if r == "NO_BUTTON":
+            _log("未找到按钮 %s" % (btn_texts,))
+            return "NO_BUTTON"
+        _log("第 %d 次 %s" % (i + 1, r))
+
         for _ in range(8):
             time.sleep(1)
             try:
-                body = sb.execute_script(
-                    "return document.body ? document.body.innerText : ''") or ""
+                body = sb.execute_script(BODY_JS) or ""
             except Exception:
                 body = ""
-
-            # ① 未到期受限
-            if any(m.lower() in body.lower() for m in restricted_markers):
+            low = body.lower()
+            if any(m.lower() in low for m in restricted_markers):
                 _log("⚠️ 站点规则：未到续期时间")
                 return "NOT_TIME"
-
-            # ② 自定义 marker
             if modal_marker:
                 try:
                     if sb.execute_script(
-                            "return document.querySelector(arguments[0]) !== null",
-                            modal_marker):
+                            "return document.querySelector(%s) !== null;" % MKR):
                         return "OK"
                 except Exception:
                     pass
-
-            # ③ 可见的弹窗（Tailwind modal 常见形态）
             try:
-                vis = sb.execute_script("""
-                    const sels = ['.modal.show', '[role=dialog]', '[data-modal]',
-                                  '.fixed.inset-0', '.fixed.z-50'];
-                    for (const s of sels) {
-                        for (const el of document.querySelectorAll(s)) {
-                            const r = el.getBoundingClientRect();
-                            const st = getComputedStyle(el);
-                            if (r.width > 200 && r.height > 100
-                                && st.display !== 'none' && st.visibility !== 'hidden'
-                                && Number(st.opacity) > 0.1) return s;
-                        }
-                    }
-                    return null;
-                """)
+                vis = sb.execute_script("return " + VISIBLE_MODAL_JS)
                 if vis:
-                    _log("弹窗元素命中: %s" % vis)
+                    _log("弹窗命中: %s" % vis)
                     return "OK"
             except Exception:
                 pass
-
-            # ④ Turnstile widget 可见
             st = turnstile_state(sb)
             wr = st.get("wrect") or {}
             if st.get("widget") and wr.get("w", 0) > 10 and wr.get("h", 0) > 10:
