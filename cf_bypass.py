@@ -319,35 +319,64 @@ def renew_click_modal(sb, btn_texts=("Renew",), modal_marker=None,
         r = None
         try:
             r = sb.execute_script(js, list(btn_texts))
-        except Exception:
-            pass
+        except Exception as e:
+            _log("点击出错: %s" % str(e)[:100])
         if r == "NO_BUTTON":
+            _log("未找到按钮: %s" % (btn_texts,))
             return "NO_BUTTON"
-        time.sleep(2)
+        _log("第 %d 次点击，等弹窗..." % (i + 1))
 
-        # 未到期弹窗
-        try:
-            body = sb.execute_script(
-                "return document.body ? document.body.innerText : ''") or ""
-        except Exception:
-            body = ""
-        if any(m.lower() in body.lower() for m in restricted_markers):
-            _log("⚠️ 站点规则：未到续期时间（Renewal Restricted）")
-            return "NOT_TIME"
-
-        # modal 是否出现
-        if modal_marker:
+        # 点完给足时间（弹窗可能延迟出现）
+        for _ in range(8):
+            time.sleep(1)
             try:
-                if sb.execute_script(
-                        "return document.querySelector(arguments[0]) !== null",
-                        modal_marker):
+                body = sb.execute_script(
+                    "return document.body ? document.body.innerText : ''") or ""
+            except Exception:
+                body = ""
+
+            # ① 未到期受限
+            if any(m.lower() in body.lower() for m in restricted_markers):
+                _log("⚠️ 站点规则：未到续期时间")
+                return "NOT_TIME"
+
+            # ② 自定义 marker
+            if modal_marker:
+                try:
+                    if sb.execute_script(
+                            "return document.querySelector(arguments[0]) !== null",
+                            modal_marker):
+                        return "OK"
+                except Exception:
+                    pass
+
+            # ③ 可见的弹窗（Tailwind modal 常见形态）
+            try:
+                vis = sb.execute_script("""
+                    const sels = ['.modal.show', '[role=dialog]', '[data-modal]',
+                                  '.fixed.inset-0', '.fixed.z-50'];
+                    for (const s of sels) {
+                        for (const el of document.querySelectorAll(s)) {
+                            const r = el.getBoundingClientRect();
+                            const st = getComputedStyle(el);
+                            if (r.width > 200 && r.height > 100
+                                && st.display !== 'none' && st.visibility !== 'hidden'
+                                && Number(st.opacity) > 0.1) return s;
+                        }
+                    }
+                    return null;
+                """)
+                if vis:
+                    _log("弹窗元素命中: %s" % vis)
                     return "OK"
             except Exception:
                 pass
-        # 或者 Turnstile widget 已可见
-        st = turnstile_state(sb)
-        wr = st.get("wrect") or {}
-        if st.get("widget") and wr.get("w", 0) > 10 and wr.get("h", 0) > 10:
-            return "OK"
-        time.sleep(2)
+
+            # ④ Turnstile widget 可见
+            st = turnstile_state(sb)
+            wr = st.get("wrect") or {}
+            if st.get("widget") and wr.get("w", 0) > 10 and wr.get("h", 0) > 10:
+                _log("Turnstile widget 已可见")
+                return "OK"
+        time.sleep(1)
     return "NO_MODAL"
