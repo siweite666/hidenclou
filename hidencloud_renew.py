@@ -25,6 +25,10 @@ from urllib.request import Request, urlopen
 
 from seleniumbase import SB
 
+# 过盾工具（可跨仓库复用，见 cf_bypass.py 头部说明）
+from cf_bypass import (solve_turnstile, turnstile_state, challenge_frames,
+                       widget_box, is_block_page, renew_click_modal)
+
 # ── 配置 ─────────────────────────────────────────────────────
 HIDEN_COOKIE = os.environ.get("HIDEN_COOKIE", "").strip()
 PROXY_URL = os.environ.get("PROXY_URL", "").strip()          # socks5://127.0.0.1:1080
@@ -133,16 +137,15 @@ def main():
             title = sb.get_title()
             log(f"📄 标题: {title}")
 
-            # 首屏过盾：系统级物理点击（WARP/代理出口 IP 下 CF 才会出挑战）
-            try:
-                log("🛡️ 尝试系统级物理点击过盾...")
-                sb.uc_gui_click_captcha()
-                time.sleep(8)
+            # 首屏过盾：挑战 iframe 在闭包 shadow DOM 里，走 CDP 取坐标点击
+            if is_block_page(sb):
+                log("🛡️ 检测到 CF 拦截页，开始过盾...")
+                solve_turnstile(sb, timeout=CF_WAIT, reload_after=5,
+                                shot="hidencloud_debug_cfwaf.png")
                 title = sb.get_title()
-                log(f"   点击后标题: {title}")
-            except Exception as e:
-                log(f"   过盾点击跳过/已完成: {str(e)[:120]}")
+                log(f"   过盾后标题: {title}")
 
+            # 站点 WAF 硬封（换 IP 才行，过盾救不了）
             src0 = sb.get_page_source()
             if "Block" in title or "Connection Blocked" in src0[:800]:
                 msg = "❌ HidenCloud 续期失败\nIP 被 WAF 封锁\n需要更换代理节点"
@@ -223,20 +226,28 @@ def main():
             # ── 逐个续期 ─────────────────────────────────────
             for sid in ids:
                 log(f"🔄 服务 {sid} 申请续期...")
-                ok, detail = renew_one(sb, sid)
-                log(f"   {'✅' if ok else '❌'} {detail}")
-                results.append((sid, ok, detail))
+                r3 = renew_one(sb, sid)
+                if len(r3) == 3:
+                    _, ok, detail = r3          # ("NOT_TIME", "未到期…")
+                    results.append((sid, "NOT_TIME", detail))
+                    log(f"   ⏸ {detail}")
+                else:
+                    ok, detail = r3
+                    log(f"   {'✅' if ok else '❌'} {detail}")
+                    results.append((sid, bool(ok), detail))
 
             # ── 报告 ─────────────────────────────────────────
-            okn = sum(1 for _, o, _ in results if o)
-            badn = len(results) - okn
+            okn = sum(1 for _, o, _ in results if o is True)
+            waitn = sum(1 for _, o, _ in results if o == "NOT_TIME")
+            badn = len(results) - okn - waitn
             lines = [f"☁️ HidenCloud 自动续费任务",
                      "━━━━━━━━━━━━━━━━━━",
                      f"🕒 时间: {now_str()}",
                      "━━━━━━━━━━━━━━━━━━",
-                     f"📊 执行统计: 成功 {okn} | 失败 {badn}", ""]
+                     f"📊 执行统计: 成功 {okn} | 未到期 {waitn} | 失败 {badn}", ""]
             for sid, o, d in results:
-                lines.append(f"{'✅' if o else '❌'} 服务 {sid}")
+                mark = "✅" if o is True else ("⏸" if o == "NOT_TIME" else "❌")
+                lines.append(f"{mark} 服务 {sid}")
                 lines.append(f"   └ {d}")
             msg = "\n".join(lines)
             log("📊 任务完成\n" + msg)
@@ -252,7 +263,7 @@ def main():
             except Exception as e:
                 log(f"⚠️ 读取 cookie 失败: {str(e)[:150]}")
 
-            if badn:
+            if badn:      # 未到期不算失败
                 sys.exit(1)
 
     except Exception as e:
@@ -268,72 +279,49 @@ def renew_one(sb, sid):
     sb.uc_open_with_reconnect(url, reconnect_time=6)
     time.sleep(5)
 
-    if "Security Verification" in sb.get_page_source():
-        return False, "被站点 CF 拦（Security Verification）"
+    if is_block_page(sb):
+        log("   被站点 CF 拦，先过盾...")
+        solve_turnstile(sb, timeout=CF_WAIT, shot="hidencloud_debug_waf_page.png")
     if "/login" in sb.get_current_url():
         return False, "cookie 失效，跳转到登录页"
 
-    # 打开续期 modal（widget 在 modal 内，隐藏容器里 Turnstile 不跑挑战）
-    try:
-        sb.execute_script("""
-            const b=[...document.querySelectorAll('button,a')]
-              .find(x=>/renew/i.test(x.textContent||'') && /renew/i.test((x.getAttribute('data-modal-target')||'')+(x.getAttribute('onclick')||'')+(x.getAttribute('href')||'')));
-            if(b) b.click();
-        """)
-        time.sleep(2)
-    except Exception:
-        pass
-    # 物理点击过盾
-    try:
-        sb.uc_gui_click_captcha()
-        time.sleep(6)
-    except Exception:
-        pass
+    # 点 Renew 弹 modal —— widget 在 modal 内，隐藏容器里挑战不会发起
+    mr = renew_click_modal(sb, btn_texts=("Renew",))
+    log(f"   弹窗: {mr}")
+    if mr == "NOT_TIME":
+        return "NOT_TIME", "未到续期时间（站点要求到期前 1 天内）"
+    if mr in ("NO_BUTTON", "NO_MODAL"):
+        try:
+            sb.save_screenshot("hidencloud_debug_no_modal.png")
+        except Exception:
+            pass
+        return False, f"续期弹窗未出现（{mr}）"
 
     try:
         sb.save_screenshot("hidencloud_debug_renew_page.png")
     except Exception:
         pass
-    st = sb.execute_script("""
-    const w=document.querySelector('.cf-turnstile');
-        const f=document.querySelector('[name="cf-turnstile-response"]');
-        return JSON.stringify({widget:!!w, iframe:!!document.querySelector('iframe[src*="challenges.cloudflare"]'),
-          field:!!f, tokenLen: f?(f.value||'').length:0, form:!!document.querySelector('form[action*="/renew"]')});
-    """)
-    log(f"   widget: {st}")
 
-    # 等 Turnstile token
+    # 过盾：挑战 iframe 在闭包 shadow DOM 里，走 CDP 取坐标点击
+    st0 = turnstile_state(sb)
+    _cd = sb.execute_script("""
+        return JSON.stringify({iframe: document.querySelectorAll('iframe').length,
+          cfIframe: document.querySelectorAll('iframe[src*="challenges.cloudflare"]').length});
+    """)
+    log(f"   状态: {st0}  普通DOM: {_cd}")
+
+    ok = solve_turnstile(sb, timeout=TS_WAIT, require_positive=True,
+                         shot="hidencloud_debug_no_token.png")
     token = ""
-    for i in range(TS_WAIT // 3):
-        token = sb.execute_script("""
-            const f=document.querySelector('[name="cf-turnstile-response"]');
-            return f?(f.value||''):'';
-        """)
-        if token:
-            log(f"   ✅ Turnstile token（{i*3}s）: {token[:36]}...")
-            break
-        if i == 2:
-            # 引导 widget 进入视口，触发挑战
-            try:
-                sb.execute_script("""
-                    const w=document.querySelector('.cf-turnstile');
-                    if(w){w.scrollIntoView({block:'center'});}
-                """)
-            except Exception:
-                pass
-        time.sleep(3)
-    if not token:
-        try:
-            sb.save_screenshot("hidencloud_debug_no_token.png")
-        except Exception:
-            pass
-        _w = sb.execute_script("""
-            const w=document.querySelector('.cf-turnstile');
-            return w ? JSON.stringify({rect: w.getBoundingClientRect().toJSON(),
-              html: w.innerHTML.slice(0,200)}) : 'none';
-        """)
-        log(f"   widget 细节: {_w}")
-        return False, "Turnstile 未出 token（出口 IP 不被信任）"
+    try:
+        token = sb.execute_script(
+            "const f=document.querySelector('[name=\"cf-turnstile-response\"]');"
+            "return f?(f.value||''):'';") or ""
+    except Exception:
+        pass
+    if not ok or not token:
+        return False, "Turnstile 未通过（token 未生成）"
+    log(f"   ✅ token: {token[:36]}...")
 
     # 带 token 提交
     res = sb.execute_async_script("""
