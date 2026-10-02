@@ -307,22 +307,70 @@ def renew_click_modal(sb, btn_texts=("Renew",), modal_marker=None,
     js = """
     (texts) => {
         const bs = [...document.querySelectorAll('button, a')];
-        const b = bs.find(x => texts.some(t =>
-            (x.textContent || '').trim().toLowerCase().includes(t.toLowerCase())));
-        if (!b) return 'NO_BUTTON';
-        b.scrollIntoView({block: 'center'});
-        b.click();
-        return 'CLICKED';
+        const cands = [];
+        bs.forEach(x => {
+            const tx = (x.textContent || '').trim();
+            if (texts.some(t => tx.toLowerCase() === t.toLowerCase()
+                             || tx.toLowerCase().includes(t.toLowerCase()))) {
+                const r = x.getBoundingClientRect();
+                cands.push({tag: x.tagName, text: tx.slice(0, 40),
+                    cls: (x.className || '').toString().slice(0, 90),
+                    modalTarget: x.getAttribute('data-modal-target'),
+                    modalToggle: x.getAttribute('data-modal-toggle'),
+                    onclick: (x.getAttribute('onclick') || '').slice(0, 90),
+                    href: x.getAttribute('href'), type: x.getAttribute('type'),
+                    disp: getComputedStyle(x).display,
+                    vis: getComputedStyle(x).visibility,
+                    rect: [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height)]});
+            }
+        });
+        return JSON.stringify(cands);
     }
     """
     for i in range(tries):
+        if i == 0:
+            try:
+                cands = sb.execute_script(js, list(btn_texts))
+                _log("候选按钮: %s" % str(cands)[:900])
+            except Exception as e:
+                _log("枚举失败: %s" % str(e)[:120])
+
         r = None
         try:
-            r = sb.execute_script(js, list(btn_texts))
+            r = sb.execute_script("""
+                (texts) => {
+                    const bs = [...document.querySelectorAll('button, a')];
+                    const b = bs.find(x => {
+                        const tx = (x.textContent || '').trim().toLowerCase();
+                        const r = x.getBoundingClientRect();
+                        return texts.some(t => tx === t.toLowerCase())
+                            && r.width > 0 && r.height > 0;
+                    }) || bs.find(x => {
+                        const tx = (x.textContent || '').trim().toLowerCase();
+                        return texts.some(t => tx.includes(t.toLowerCase()))
+                            && x.getBoundingClientRect().width > 0;
+                    });
+                    if (!b) return 'NO_BUTTON';
+                    b.scrollIntoView({block: 'center'});
+                    return 'FOUND:' + (b.textContent || '').trim().slice(0, 30);
+                }
+            """, list(btn_texts))
+            _log("定位: %s" % r)
+            # 再用真实鼠标点击（Tailwind modal 用 onclick 绑定，JS click 可能不触发）
+            try:
+                sb.execute_script("""
+                    (texts) => {
+                        const bs = [...document.querySelectorAll('button, a')];
+                        const b = bs.find(x => (x.textContent || '').trim().toLowerCase()
+                            === texts[0].toLowerCase());
+                        if (b) b.click();
+                    }
+                """, list(btn_texts))
+            except Exception:
+                pass
         except Exception as e:
             _log("点击出错: %s" % str(e)[:100])
         if r == "NO_BUTTON":
-            _log("未找到按钮: %s" % (btn_texts,))
             return "NO_BUTTON"
         _log("第 %d 次点击，等弹窗..." % (i + 1))
 
