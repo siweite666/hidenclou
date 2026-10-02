@@ -1,0 +1,77 @@
+name: _zz_nodetest
+
+on:
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  t:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [node, warp]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y xvfb x11-utils xdotool scrot fonts-noto-cjk
+          pip install seleniumbase beautifulsoup4
+          seleniumbase install chromedriver
+
+      # ── 出口 A：节点代理（NODE_LINK）──
+      - name: 🌐 节点代理
+        if: matrix.mode == 'node'
+        continue-on-error: true
+        env:
+          NODE_LINK: ${{ secrets.NODE_LINK }}
+        run: |
+          bash <(wget -qO- https://main.ssss.nyc.mn/setup_proxy.sh)
+          echo "── 代理环境 ──"
+          echo "PROXY_SERVER=${PROXY_SERVER:-（空）}"
+          echo "PROXY_URL=socks5://127.0.0.1:1080" >> $GITHUB_ENV
+          curl -sS --socks5-hostname 127.0.0.1:1080 -m 20 https://api.ipify.org || echo "socks5 不通"
+          echo
+
+      # ── 出口 B：WARP ──
+      - name: 🌐 WARP
+        if: matrix.mode == 'warp'
+        uses: fscarmen/warp-on-actions@v1.1
+        with:
+          stack: dual
+
+      - name: Run
+        env:
+          TEST_LABEL: ${{ matrix.mode }}
+        run: python _nodetest.py || echo "退出码 $?"
+
+      - name: Shot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nodetest-${{ matrix.mode }}
+          path: nodetest_*.png
+          retention-days: 2
+          if-no-files-found: ignore
+
+      - name: Cleanup
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          runs=$(gh run list --workflow="_zz_nodetest" --limit=50 --json databaseId --jq '.[].databaseId')
+          n=0
+          for r in $runs; do
+            n=$((n+1))
+            [ $n -gt 1 ] && gh run delete $r || true
+          done
