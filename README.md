@@ -1,59 +1,49 @@
-# HidenCloud 自动续费
+## HidenCloud自动续期
+使用Github Actions 自动给HidenCloud服务续期,HidenCloud容易封多账号，隔离好环境,使用独享节点(仅自己一人使用的)
 
-<p align="left">
-  <img src="https://img.shields.io/github/stars/SunshineList/hidencloud_renew?style=flat-square&logo=github" alt="GitHub stars">
-  <img src="https://img.shields.io/github/forks/SunshineList/hidencloud_renew?style=flat-square&logo=github" alt="GitHub forks">
-  <img src="https://img.shields.io/github/actions/workflow/status/SunshineList/hidencloud_renew/hidencloud_renew.yml?style=flat-square&logo=github-actions" alt="GitHub workflow status">
-  <img src="https://img.shields.io/github/license/SunshineList/hidencloud_renew?style=flat-square" alt="GitHub license">
-</p>
 
-HidenCloud 自动续费脚本，支持多账号、TG 通知、Cookie 自动更新。
+温馨提示： HidenCloud已取消Remenber_web长效cookie，需要使用账号密码登录，需要过cloudflare验证，尽量使用干净点的节点，否则无法过验证。
 
-## 核心功能
-- **自动续期**：默认续期 7 天。
-- **自动扣费**：检测到未支付订单时自动用账户余额支付。
-- **TG 推送**：包含账号、余额、执行结果及每日一言。
-- **持久化**：配合 GitHub PAT 可自动回写 Cookie，不用频繁手动更新 Secret。
+## 配置
 
----
+在仓库 `Settings → Secrets and variables → Actions` 中添加以下 Secrets：
 
-## 快速配置 (GitHub Actions)
+| Secret 名称 | 是否必填 | 说明 | 示例 |
+|---|---|---|---|
+| `COOKIE_VALUE`  | ✅必填 | Remenber_web cookie的值,有效期大于1年  |
+| `EMAIL`         | ✅必填 | HidenCloud 邮箱 |
+| `PASSWORD`      | ✅必填 | HidenCloud 密码 |
+| `NODE_LINK`     | ❌可选 | 代理节点地址,例如:vless:// vmess:// trojan:// hysteria2:// anytls://|
+| `TG_BOT_TOKEN`  | ❌可选 | Telegram Bot Token | 
+| `TG_CHAT_ID`    | ❌可选 | Telegram Chat ID |
 
-### 1. 获取 Cookie
-1. 浏览器登录 [HidenCloud](https://hidencloud.com)。
-2. 按 `F12` 打开开发者工具，点击 `Network` (网络) 标签。
-3. 刷新页面，找到任意一个请求，在 `Request Headers` (请求头) 中找到 `cookie` 字段。
-4. 复制那一长串内容（包含 `hidencloud_session` 等）。
 
-### 2. 设置 Secrets
-在 GitHub 仓库的 `Settings` -> `Secrets and variables` -> `Actions` 下添加：
+`COOKIE_VALUE`的获取如图(登录dashborad后F12或右键检查,选择 应用程序 或 Appcations 或 存储,左边找到cookie获取)
+<img width="1200" height="600" alt="image" src="https://github.com/user-attachments/assets/be28a597-eef8-481b-862d-cc98533a2e27" />
 
-- **`HIDEN_COOKIE`**: 刚才复制的 Cookie。如果要跑多账号，用 `&` 或换行符隔开。
-- **`TG_BOT_TOKEN`**: 联系 [@BotFather](https://t.me/BotFather) 创建机器人获取。
-- **`TG_CHAT_ID`**: 给 [@userinfobot](https://t.me/userinfobot) 发消息获取。
-- **`GH_PAT`**: (可选) [在此生成](https://github.com/settings/tokens)，勾选 `repo` 权限。用于让脚本自动更新 Cookie。
 
----
+### 代理格式（确认在v2rayN里使用正常的节点,使用注册时使用的代理节点）
 
-## 本地运行
+`NODE_LINK` 支持以下任意一种代理协议的完整分享链接（不配置则直连）：
 
-如果想先在本地跑一下：
-1. 安装依赖：
-   ```bash
-   pip install curl_cffi beautifulsoup4 pynacl
-   ```
-2. 修改 `config.json` 填入信息。
-3. 执行：
-   ```bash
-   python hidencloud_renew.py
-   ```
+- **VLESS**：`vless://uuid@server:port?security=reality&sni=...&type=ws&...`
+- **VMess**：`vmess://base64encoded...`
+- **Trojan**：`trojan://password@server:port?sni=...&type=ws&...`
+- **tuic**：`tuic://uuid:password@server:port...`
+- **anytls**：`anytls://uuid@server:port...`
+- **hysteria2**：`hysteria2://base64@server:port...`
+- **SOCKS5**：`socks5://user:pass@server:port` 或 `socks://user:pass@server:port`
+
+## 使用
+
+### GitHub Actions 运行步骤
+
+1. Fork 本仓库  
+2. 在仓库 Secrets 中配置必填的环境变量,（可选）配置 `TG_BOT_TOKEN`、`TG_CHAT_ID`、`NODE_LINK`  
+3. Actions菜单里手动触发 `workflow_dispatch`  
+4. 根据服务到期时间来修改cron运行时间,比如你的服务是25号到期,计算后是星期二,则设置cron为每周一运行
+
 
 ---
 
-## 常见问题
-- **为什么登录失败？**
-  脚本目前不走账号密码登录（为了绕过 Cloudflare 验证码），只认 Cookie。如果提示失效，请按照上面的步骤重新抓取。
-- **GitHub Actions 没跑？**
-  确认 `.github/workflows` 文件夹在项目最根部，不要塞进子文件夹里。
-- **Cookie 自动更新不生效？**
-  检查 `GH_PAT` 是否配置正确且具备 `repo` 权限。
+**⚠️ 免责声明**：本脚本仅供学习交流使用，使用者需遵守 [HidenCloud](https://hidencloud.com) 的服务条款。因使用本脚本造成的任何问题，作者不承担任何责任。
