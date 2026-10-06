@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 
 import os,re,sys,time,random,json,requests
+from datetime import datetime, timedelta
 try:
     from patchright.sync_api import sync_playwright
 except ImportError:
@@ -632,6 +633,23 @@ def get_due_date(page):
         log(f"❌ 获取Due Date失败: {e}")
     return "未知"
 
+def days_until_due(due_str):
+    """把 '07 Oct 2026' 解析成距今天数。解析失败返回 None（调用方应保守走完整流程）。
+
+    站点规则：仅到期前 1 天内可续期。非续期日直接跳过 Renew，
+    省掉 showRenewAlert 无效点击 + 重试（每天跑的情况下 6/7 次是白跑）。
+    """
+    if not due_str or due_str == "未知":
+        return None
+    for fmt in ("%d %b %Y", "%d %B %Y", "%Y-%m-%d", "%d/%m/%Y", "%b %d %Y", "%B %d %Y"):
+        try:
+            d = datetime.strptime(due_str.strip(), fmt).date()
+            return (d - datetime.now().date()).days
+        except Exception:
+            continue
+    return None
+
+
 def renew_service(page):
 
     try:
@@ -963,8 +981,17 @@ def main():
             old_due = get_due_date(page)
             log(f"📆 续费前到期时间：{old_due}")
 
-            # 执行续费
-            renew_result = renew_service(page)
+            # ── 预检：距到期 >1 天则不必尝试续期（站点仅到期前 1 天内允许）──
+            renew_result = None
+            _d = days_until_due(old_due)
+            if _d is not None and _d > 1:
+                log(f"⏭️ 距到期还有 {_d} 天（>1 天），跳过续期尝试")
+                renew_result = "NOT_TIME"
+            else:
+                if _d is None:
+                    log("⚠️ 到期日解析失败，保守走完整续期流程")
+                # 执行续费
+                renew_result = renew_service(page)
 
             new_due = old_due
             if renew_result == "NOT_TIME":
