@@ -52,6 +52,33 @@ try {
 } catch (e) {}
 """
 
+def mask_ip(ip):
+    """脱敏出口 IP：公开仓库的 Actions 日志任何人都能看，
+    完整 IP 等于泄露代理节点落地地址。只留前两段。"""
+    if not ip or ip in ("获取失败", "unknown"):
+        return ip or "-"
+    if ":" in ip:                      # IPv6
+        parts = [x for x in ip.split(":") if x]
+        return ":".join(parts[:2]) + ":x:x:x"
+    parts = ip.split(".")
+    if len(parts) == 4:
+        return f"{parts[0]}.{parts[1]}.x.x"
+    return "x.x.x.x"
+
+
+def mask_url(u):
+    """脱敏 URL：发票 UUID 是账号内可访问的链接，不该进公开日志。"""
+    if not u:
+        return u or "-"
+    try:
+        import re as _re
+        u = _re.sub(r"/payment/invoice/[0-9a-fA-F-]{8,}", "/payment/invoice/***", u)
+        u = _re.sub(r"([?&](?:token|code|key|session)=)[^&\s]+", r"\1***", u)
+        return u
+    except Exception:
+        return "***"
+
+
 def get_current_ip(proxy_server=None):
     """获取当前出口IP"""
     proxies = {"http": proxy_server, "https": proxy_server} if (proxy_server and IS_PROXY) else None
@@ -633,6 +660,7 @@ def renew_service(page):
                     cls: String(x.className || '').slice(0, 60),
                     modalTarget: x.getAttribute('data-modal-target'),
                     modalToggle: x.getAttribute('data-modal-toggle'),
+                    modalShow: x.getAttribute('data-modal-show'),
                     onclick: (x.getAttribute('onclick') || '').slice(0, 80),
                     href: x.getAttribute('href'), type: x.getAttribute('type'),
                     disp: getComputedStyle(x).display,
@@ -641,20 +669,71 @@ def renew_service(page):
             return JSON.stringify(out);
         })()"""
 
-        CLICK_RENEW_JS = """(() => {
-            const bs = Array.from(document.querySelectorAll('button, a'));
-            let b = bs.find(x => (x.textContent || '').trim().toLowerCase() === 'renew'
-                                 && x.getBoundingClientRect().width > 0);
-            let how = 'exact';
-            if (!b) {
-                b = bs.find(x => /renew/i.test((x.textContent || '').trim())
-                                 && x.getBoundingClientRect().width > 0);
-                how = 'contains';
+        # 核心优化：站点按钮带 data-modal-target → 弹窗元素就在 DOM 里，
+        # 直接定位并触发，不必反复盲点（实测盲点平均要 6 次、耗时 2 分钟）。
+        PROBE_MODAL_JS = """(() => {
+            const btn = Array.from(document.querySelectorAll('button, a'))
+                .find(x => /^renew$/i.test((x.textContent||'').trim())
+                        || /renew/i.test((x.textContent||'').trim()));
+            if (!btn) return JSON.stringify({err: 'NO_BUTTON'});
+            const tid = btn.getAttribute('data-modal-target')
+                     || btn.getAttribute('data-modal-toggle')
+                     || btn.getAttribute('data-modal-show');
+            const out = {modalId: tid, exists: false};
+            if (tid) {
+                const el = document.getElementById(tid);
+                if (el) {
+                    const r = el.getBoundingClientRect();
+                    const st = getComputedStyle(el);
+                    out.exists = true;
+                    out.cls = String(el.className || '').slice(0, 200);
+                    out.disp = st.display; out.vis = st.visibility; out.op = st.opacity;
+                    out.rect = [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height)];
+                    out.ariaHidden = el.getAttribute('aria-hidden');
+                    out.turnstiles = el.querySelectorAll('[name="cf-turnstile-response"]').length;
+                    out.role = el.getAttribute('role');
+                }
             }
-            if (!b) return 'NO_BUTTON';
-            b.scrollIntoView({block: 'center'});
-            b.click();
-            return 'CLICKED(' + how + '):' + (b.textContent || '').trim().slice(0, 24);
+            return JSON.stringify(out);
+        })()"""
+
+        # 直接显示弹窗：优先 Flowbite API，其次移除 hidden 类，最后派发点击
+        SHOW_MODAL_JS = """(() => {
+            const btn = Array.from(document.querySelectorAll('button, a'))
+                .find(x => /renew/i.test((x.textContent||'').trim()));
+            if (!btn) return 'NO_BUTTON';
+            const tid = btn.getAttribute('data-modal-target')
+                     || btn.getAttribute('data-modal-toggle')
+                     || btn.getAttribute('data-modal-show');
+            const el = tid ? document.getElementById(tid) : null;
+            // 1) Flowbite 全局 API
+            try {
+                if (window.Modal && el) {
+                    const inst = window.Modal.getOrCreateInstance(el);
+                    if (inst && inst.show) { inst.show(); return 'FLOWBITE_API'; }
+                }
+            } catch (e) {}
+            // 2) 原生 bootstrap API（老版本 Flowbite 基于它）
+            try {
+                if (window.bootstrap && window.bootstrap.Modal && el) {
+                    window.bootstrap.Modal.getOrCreateInstance(el).show();
+                    return 'BOOTSTRAP_API';
+                }
+            } catch (e) {}
+            // 3) 手动移除隐藏类并显示
+            if (el) {
+                el.classList.remove('hidden');
+                el.classList.add('flex');
+                el.style.display = 'flex';
+                el.removeAttribute('aria-hidden');
+                el.setAttribute('data-modal-show', 'true');
+                if (el.parentElement) el.parentElement.classList.remove('hidden');
+                return 'MANUAL_SHOW';
+            }
+            // 4) 兜底：真实派发点击事件
+            btn.scrollIntoView({block: 'center'});
+            btn.dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true, view: window}));
+            return 'DISPATCH_CLICK';
         })()"""
 
         VISIBLE_MODAL_JS = """(() => {
@@ -673,34 +752,60 @@ def renew_service(page):
             return null;
         })()"""
 
-        # 先枚举一次，日志留证据
+        # 先枚举 + 探测弹窗元素，日志留证据
         try:
             log(f"   🔎 候选 Renew 按钮: {str(page.evaluate(ENUM_JS))[:600]}")
         except Exception as e:
             log(f"   🔎 枚举失败: {str(e)[:150]}")
+        modal_id = None
+        try:
+            probe = json.loads(page.evaluate(PROBE_MODAL_JS) or "{}")
+            modal_id = probe.get("modalId")
+            log(f"   🔎 弹窗探测: {json.dumps(probe, ensure_ascii=False)[:400]}")
+        except Exception as e:
+            log(f"   🔎 弹窗探测失败: {str(e)[:150]}")
 
+        def _modal_up():
+            """弹窗是否已出现（多判据）"""
+            try:
+                vis = page.evaluate(VISIBLE_MODAL_JS)
+                if vis:
+                    return vis
+            except Exception:
+                pass
+            try:
+                if create_btn.is_visible():
+                    return "create_btn"
+            except Exception:
+                pass
+            if challenge_boxes(page):
+                return "turnstile"
+            return None
+
+        modal_opened = False
         for i in range(6):
             try:
-                # 点击：优先 JS 精确/包含匹配（能拿到 data-modal-target 那类按钮）
-                clicked = None
+                # 点击方式优先级：直接显示弹窗 > JS 精确点击 > 定位器点击
+                how = None
                 try:
-                    clicked = page.evaluate(CLICK_RENEW_JS)
+                    how = page.evaluate(SHOW_MODAL_JS)
                 except Exception as e:
-                    log(f"   ⚠️ JS 点击异常: {str(e)[:100]}")
-                if clicked == 'NO_BUTTON':
-                    # 退回 Playwright 定位器
+                    log(f"   ⚠️ 弹窗显示异常: {str(e)[:100]}")
+
+                if how in (None, 'NO_BUTTON'):
                     try:
                         renew_btn.wait_for(state="visible", timeout=5000)
                         renew_btn.scroll_into_view_if_needed()
                         renew_btn.click(timeout=8000)
-                        clicked = "LOCATOR"
+                        how = "LOCATOR"
                     except Exception as e:
                         log(f"   ⚠️ 定位器点击失败: {str(e)[:100]}")
-                log(f"   🖱️ 第 {i+1} 次点击 Renew → {clicked}")
+                log(f"   🖱️ 第 {i+1} 次触发 Renew → {how}")
 
-                # 观察 8 秒：先看站点限制文案，再看弹窗
-                for _ in range(8):
-                    time.sleep(1)
+                # 观察 6 秒（缩短轮询间隔，早发现早停）
+                hit = None
+                for _ in range(12):
+                    time.sleep(0.5)
                     try:
                         body = page.locator("body").inner_text() or ""
                     except Exception:
@@ -710,39 +815,26 @@ def renew_service(page):
                         log("   ⚠️ 站点规则：未到续期时间")
                         page.screenshot(path="renew_not_allowed.png")
                         return "NOT_TIME"
-                    # 弹窗检测：多选择器 JS
-                    try:
-                        vis = page.evaluate(VISIBLE_MODAL_JS)
-                    except Exception:
-                        vis = None
-                    if vis:
-                        log(f"   ✅ 弹窗已出现（{vis}）")
-                        modal_opened = True
+                    hit = _modal_up()
+                    if hit:
                         break
-                    # 兜底：Create Invoice 可见 或 弹窗内 Turnstile 出现
-                    try:
-                        if create_btn.is_visible():
-                            log("   ✅ 弹窗已出现（Create Invoice 可见）")
-                            modal_opened = True
-                            break
-                    except Exception:
-                        pass
-                    if challenge_boxes(page):
-                        log("   ✅ 弹窗已出现（含 Turnstile 挑战）")
-                        modal_opened = True
-                        break
-                if modal_opened:
+                if hit:
+                    log(f"   ✅ 弹窗已出现（{hit}）")
+                    modal_opened = True
                     break
-                # 没出来：刷新页面再试（JS 可能没绑定事件）
-                log("   ⚠️ 弹窗未出现，刷新页面后重试...")
-                try:
-                    page.reload(wait_until="domcontentloaded", timeout=60000)
-                    solve_turnstile(page, timeout=45, success_check=page_ready, reload_after=8)
-                    time.sleep(2)
-                except Exception as e:
-                    log(f"   ⚠️ 刷新失败: {str(e)[:100]}")
+
+                # 未出现：先原地重试一次（不刷新，省时间），再考虑刷新
+                log("   ⚠️ 弹窗未出现，原地重试...")
+                if i >= 1 and i % 2 == 1:
+                    try:
+                        page.reload(wait_until="domcontentloaded", timeout=60000)
+                        solve_turnstile(page, timeout=45, success_check=page_ready, reload_after=8)
+                        time.sleep(1)
+                    except Exception as e:
+                        log(f"   ⚠️ 刷新失败: {str(e)[:100]}")
             except Exception as e:
                 log(f"   ❌ 尝试出错: {e}")
+
 
         if not modal_opened:
             log("❌ 错误：尝试多次后，续费弹窗仍未出现。")
@@ -782,7 +874,7 @@ def renew_service(page):
         while time.time() - start_wait < 90:
             if "/payment/invoice/" in page.url:
                 new_invoice_url = page.url
-                log(f"🎉 页面已跳转: {new_invoice_url}")
+                log(f"🎉 页面已跳转: {mask_url(new_invoice_url)}")
                 break
             if page.locator('iframe[src*="challenges.cloudflare.com"]').count() > 0:
                 log("⚠️ 遇到拦截，尝试处理...")
@@ -835,7 +927,7 @@ def main():
 
             # 获取当前出口ip
             current_ip = get_current_ip(PROXY_SERVER)
-            log(f"🎯 当前出口IP: {current_ip}")
+            log(f"🎯 当前出口IP: {mask_ip(current_ip)}")
 
             log("🚀 启动浏览器...")
             browser = p.chromium.launch(
