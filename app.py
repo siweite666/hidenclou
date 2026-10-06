@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import os,re,sys,time,random,requests
+import os,re,sys,time,random,json,requests
 try:
     from patchright.sync_api import sync_playwright
 except ImportError:
@@ -698,39 +698,44 @@ def renew_service(page):
         })()"""
 
         # 直接显示弹窗：优先 Flowbite API，其次移除 hidden 类，最后派发点击
-        SHOW_MODAL_JS = """(() => {
+        # 站点把弹窗逻辑封装在按钮 onclick 的 showRenewAlert() 里 —— 直接调用最可靠，
+        # 比猜 modal API / 手动改 class 都稳。
+        SHOW_MODAL_JS = r"""(() => {
             const btn = Array.from(document.querySelectorAll('button, a'))
                 .find(x => /renew/i.test((x.textContent||'').trim()));
             if (!btn) return 'NO_BUTTON';
+            const oc = btn.getAttribute('onclick') || '';
+            // 1) 直接调用站点自带函数
+            const m = oc.match(/showRenewAlert\s*\(([^)]*)\)/);
+            if (m && typeof window.showRenewAlert === 'function') {
+                try { window.showRenewAlert(...eval('[' + m[1] + ']')); return 'SITE_FN(' + m[1] + ')'; }
+                catch (e) { return 'SITE_FN_ERR:' + e.message; }
+            }
+            if (typeof window.showRenewAlert === 'function') {
+                try { window.showRenewAlert(); return 'SITE_FN()'; } catch (e) {}
+            }
+            // 2) Flowbite / Bootstrap modal API
             const tid = btn.getAttribute('data-modal-target')
                      || btn.getAttribute('data-modal-toggle')
                      || btn.getAttribute('data-modal-show');
             const el = tid ? document.getElementById(tid) : null;
-            // 1) Flowbite 全局 API
             try {
-                if (window.Modal && el) {
-                    const inst = window.Modal.getOrCreateInstance(el);
-                    if (inst && inst.show) { inst.show(); return 'FLOWBITE_API'; }
+                if (window.Modal && el && window.Modal.getOrCreateInstance) {
+                    window.Modal.getOrCreateInstance(el).show(); return 'FLOWBITE_API';
                 }
             } catch (e) {}
-            // 2) 原生 bootstrap API（老版本 Flowbite 基于它）
             try {
                 if (window.bootstrap && window.bootstrap.Modal && el) {
-                    window.bootstrap.Modal.getOrCreateInstance(el).show();
-                    return 'BOOTSTRAP_API';
+                    window.bootstrap.Modal.getOrCreateInstance(el).show(); return 'BOOTSTRAP_API';
                 }
             } catch (e) {}
-            // 3) 手动移除隐藏类并显示
+            // 3) 手动显示
             if (el) {
-                el.classList.remove('hidden');
-                el.classList.add('flex');
-                el.style.display = 'flex';
-                el.removeAttribute('aria-hidden');
-                el.setAttribute('data-modal-show', 'true');
-                if (el.parentElement) el.parentElement.classList.remove('hidden');
+                el.classList.remove('hidden'); el.classList.add('flex');
+                el.style.display = 'flex'; el.removeAttribute('aria-hidden');
                 return 'MANUAL_SHOW';
             }
-            // 4) 兜底：真实派发点击事件
+            // 4) 兜底：真实点击
             btn.scrollIntoView({block: 'center'});
             btn.dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true, view: window}));
             return 'DISPATCH_CLICK';
