@@ -617,38 +617,132 @@ def renew_service(page):
         renew_btn = page.locator('button:has-text("Renew")')
         create_btn = page.locator('button:has-text("Create Invoice")')
 
+        # ── Renew 点击 + 弹窗检测（移植旧版成熟逻辑）──
+        # 新版只靠 create_btn.wait_for() 单一判据，容易漏判；
+        # 旧版 cf_bypass 用「JS 枚举按钮 + 多选择器弹窗检测」，更可靠。
         modal_opened = False
+
+        ENUM_JS = """(() => {
+            const out = [];
+            for (const x of document.querySelectorAll('button, a')) {
+                const tx = (x.textContent || '').trim();
+                if (!tx) continue;
+                if (!/renew/i.test(tx)) continue;
+                const r = x.getBoundingClientRect();
+                out.push({tag: x.tagName, text: tx.slice(0, 30),
+                    cls: String(x.className || '').slice(0, 60),
+                    modalTarget: x.getAttribute('data-modal-target'),
+                    modalToggle: x.getAttribute('data-modal-toggle'),
+                    onclick: (x.getAttribute('onclick') || '').slice(0, 80),
+                    href: x.getAttribute('href'), type: x.getAttribute('type'),
+                    disp: getComputedStyle(x).display,
+                    rect: [Math.round(r.x), Math.round(r.y), Math.round(r.width), Math.round(r.height)]});
+            }
+            return JSON.stringify(out);
+        })()"""
+
+        CLICK_RENEW_JS = """(() => {
+            const bs = Array.from(document.querySelectorAll('button, a'));
+            let b = bs.find(x => (x.textContent || '').trim().toLowerCase() === 'renew'
+                                 && x.getBoundingClientRect().width > 0);
+            let how = 'exact';
+            if (!b) {
+                b = bs.find(x => /renew/i.test((x.textContent || '').trim())
+                                 && x.getBoundingClientRect().width > 0);
+                how = 'contains';
+            }
+            if (!b) return 'NO_BUTTON';
+            b.scrollIntoView({block: 'center'});
+            b.click();
+            return 'CLICKED(' + how + '):' + (b.textContent || '').trim().slice(0, 24);
+        })()"""
+
+        VISIBLE_MODAL_JS = """(() => {
+            const sels = ['.modal.show', '[role=dialog]', '[data-modal]',
+                          '.fixed.inset-0', '.fixed.z-50', '[id^=renew]', '[id*=modal]'];
+            for (const s of sels) {
+                for (const el of document.querySelectorAll(s)) {
+                    const r = el.getBoundingClientRect();
+                    const st = getComputedStyle(el);
+                    if (r.width > 200 && r.height > 100 && st.display !== 'none'
+                        && st.visibility !== 'hidden' && Number(st.opacity) > 0.1) {
+                        return s + '|' + Math.round(r.width) + 'x' + Math.round(r.height);
+                    }
+                }
+            }
+            return null;
+        })()"""
+
+        # 先枚举一次，日志留证据
+        try:
+            log(f"   🔎 候选 Renew 按钮: {str(page.evaluate(ENUM_JS))[:600]}")
+        except Exception as e:
+            log(f"   🔎 枚举失败: {str(e)[:150]}")
+
         for i in range(6):
             try:
-                renew_btn.wait_for(state="visible", timeout=10000)
-                renew_btn.scroll_into_view_if_needed()
-                log(f"🖱️ 第 {i+1} 次尝试点击 'Renew'...")
-                renew_btn.click()
-
-                # 等待一小段时间，检测是否出现“未到续期时间”弹窗
-                time.sleep(2)
-                page_text = page.locator("body").inner_text()
-                if "Renewal Restricted" in page_text or "can only renew" in page_text.lower():
-                    log("⚠️ 未到续期时间，无法续期。")
-                    page.screenshot(path="renew_not_allowed.png")
-                    return "NOT_TIME"   # 特殊状态
-
-                log("🖲️ 等待弹窗出现...")
+                # 点击：优先 JS 精确/包含匹配（能拿到 data-modal-target 那类按钮）
+                clicked = None
                 try:
-                    create_btn.wait_for(state="visible", timeout=5000)
-                    modal_opened = True
-                    log("✅ 弹窗已成功弹出！")
-                    break
-                except:
-                    # 弹窗可能先展示 Turnstile，创建按钮稍后才出现
-                    if challenge_boxes(page):
+                    clicked = page.evaluate(CLICK_RENEW_JS)
+                except Exception as e:
+                    log(f"   ⚠️ JS 点击异常: {str(e)[:100]}")
+                if clicked == 'NO_BUTTON':
+                    # 退回 Playwright 定位器
+                    try:
+                        renew_btn.wait_for(state="visible", timeout=5000)
+                        renew_btn.scroll_into_view_if_needed()
+                        renew_btn.click(timeout=8000)
+                        clicked = "LOCATOR"
+                    except Exception as e:
+                        log(f"   ⚠️ 定位器点击失败: {str(e)[:100]}")
+                log(f"   🖱️ 第 {i+1} 次点击 Renew → {clicked}")
+
+                # 观察 8 秒：先看站点限制文案，再看弹窗
+                for _ in range(8):
+                    time.sleep(1)
+                    try:
+                        body = page.locator("body").inner_text() or ""
+                    except Exception:
+                        body = ""
+                    low = body.lower()
+                    if "renewal restricted" in low or "can only renew" in low:
+                        log("   ⚠️ 站点规则：未到续期时间")
+                        page.screenshot(path="renew_not_allowed.png")
+                        return "NOT_TIME"
+                    # 弹窗检测：多选择器 JS
+                    try:
+                        vis = page.evaluate(VISIBLE_MODAL_JS)
+                    except Exception:
+                        vis = None
+                    if vis:
+                        log(f"   ✅ 弹窗已出现（{vis}）")
                         modal_opened = True
-                        log("✅ 弹窗已弹出（先出现 Turnstile 验证）！")
                         break
-                    log("⚠️ 弹窗未出现，可能是点击未响应，准备重试...")
+                    # 兜底：Create Invoice 可见 或 弹窗内 Turnstile 出现
+                    try:
+                        if create_btn.is_visible():
+                            log("   ✅ 弹窗已出现（Create Invoice 可见）")
+                            modal_opened = True
+                            break
+                    except Exception:
+                        pass
+                    if challenge_boxes(page):
+                        log("   ✅ 弹窗已出现（含 Turnstile 挑战）")
+                        modal_opened = True
+                        break
+                if modal_opened:
+                    break
+                # 没出来：刷新页面再试（JS 可能没绑定事件）
+                log("   ⚠️ 弹窗未出现，刷新页面后重试...")
+                try:
+                    page.reload(wait_until="domcontentloaded", timeout=60000)
+                    solve_turnstile(page, timeout=45, success_check=page_ready, reload_after=8)
                     time.sleep(2)
+                except Exception as e:
+                    log(f"   ⚠️ 刷新失败: {str(e)[:100]}")
             except Exception as e:
-                log(f"❌ 点击尝试出错: {e}")
+                log(f"   ❌ 尝试出错: {e}")
 
         if not modal_opened:
             log("❌ 错误：尝试多次后，续费弹窗仍未出现。")
