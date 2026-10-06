@@ -11,8 +11,8 @@ except ImportError:
 COOKIE_VALUE = os.environ.get('COOKIE_VALUE') or ""    # remember_web cookie 值，必填
 # 兼容：整个 cookie 串（name=value; name2=value2）—— 从中抽取 remember_web
 COOKIE_STR   = os.environ.get('HIDEN_COOKIE') or ""
-EMAIL        = os.environ.get('EMAIL') or ""           # 登录邮箱,可选，作为备用, 建议填写
-PASSWORD     = os.environ.get('PASSWORD') or ""        # 登录密码,可选，作为备用, 建议填写
+EMAIL        = (os.environ.get('EMAIL') or "").strip()      # 登录邮箱（strip 防 secret 尾随换行）
+PASSWORD     = (os.environ.get('PASSWORD') or "").strip()   # 登录密码（strip 防 secret 尾随换行）
 TG_CHAT_ID   = os.environ.get('TG_CHAT_ID') or ""      # Telegram Chat ID,可选，通知
 TG_BOT_TOKEN = os.environ.get('TG_BOT_TOKEN') or ""    # Telegram Bot Token,可选
 
@@ -434,43 +434,11 @@ def _remember_web_value():
 
 def login(page):
     # 1. Cookie 登录尝试
+    # Cookie 登录已废弃：HidenCloud 已取消 remember_web 长效 cookie，
+    # 旧 cookie 只能读 dashboard、写操作必被 CF 踢回登录页（假登录态）。
+    # 直接走账号密码，拿真实会话。
     if COOKIE_VALUE or COOKIE_STR:
-        log("📇 尝试 Cookie 登录...")
-        try:
-            _cookies = []
-            _rw = _remember_web_value()
-            if _rw:
-                _cookies.append({
-                    'name': 'remember_web_59ba36addc2b2f9401580f014c7f58ea4e30989d',
-                    'value': _rw,
-                    'domain': 'dash.hidencloud.com',
-                    'path': '/',
-                    'expires': int(time.time()) + 3600 * 24 * 365,
-                    'httpOnly': True,
-                    'secure': True,
-                    'sameSite': 'Lax'
-                })
-            # 整串里的其他 cookie 一并注入（session / XSRF 等）
-            for _k, _v in _parse_cookie_string(COOKIE_STR).items():
-                if _k.startswith('remember_web'):
-                    continue
-                _cookies.append({
-                    'name': _k, 'value': _v,
-                    'domain': 'dash.hidencloud.com', 'path': '/',
-                })
-            if _cookies:
-                page.context.add_cookies(_cookies)
-            log(f"🍪 注入 {len(_cookies)} 个 cookie")
-            page.goto(f"{BASE_URL}/dashboard", wait_until="domcontentloaded", timeout=60000)
-            solve_turnstile(page, timeout=90, success_check=page_ready, reload_after=8)
-            page_title = page.title()
-            log(f"📝 当前Title: {page_title}")
-            if "auth/login" not in page.url:
-                log(f"✅ Cookie 登录成功！当前已到达dashboard页面")
-                return True
-            log("⚠️ Cookie 失效，切换到账号密码登录...")
-        except Exception as e:
-            log(f"⚠️ Cookie 登录出现异常: 账号密码登录...")
+        log("ℹ️ 检测到 cookie，但站点已废弃长效 cookie —— 跳过，直接账号密码登录")
 
     # 2. 账号密码登录
     if not EMAIL or not PASSWORD:
@@ -503,14 +471,46 @@ def login(page):
                    'input[name="PASSWORD"], input[type="password"]')
         email_input = page.locator(email_sel).first
         pwd_input = page.locator(pwd_sel).first
+        def _fill_verify(loc, value, label):
+            """填入并回读校验；不符则用 type() 逐字重填（应对受控组件吞 fill）。"""
+            for attempt in range(3):
+                try:
+                    loc.click(timeout=10000)
+                    loc.fill("")
+                    loc.fill(value)
+                    time.sleep(0.4)
+                    got = (loc.input_value() or "").strip()
+                    if got == value.strip():
+                        return True
+                    log(f"   ⚠️ {label} 回读不符（第 {attempt+1} 次），改逐字输入...")
+                    loc.click(timeout=10000)
+                    loc.fill("")
+                    loc.type(value, delay=60)
+                    time.sleep(0.4)
+                    got = (loc.input_value() or "").strip()
+                    if got == value.strip():
+                        return True
+                    log(f"   ⚠️ {label} 逐字输入仍不符，回读长度={len(got)}")
+                except Exception as e:
+                    log(f"   ⚠️ {label} 第 {attempt+1} 次填入异常: {e}")
+                time.sleep(1)
+            return False
+
         email_input.wait_for(state="visible", timeout=60000)
         log("⌨️ 输入账号...")
-        email_input.click()
-        email_input.fill(EMAIL)
+        if not _fill_verify(email_input, EMAIL, "账号"):
+            log("❌ 账号填入失败（回读为空）")
+            page.screenshot(path="login_email_fill_fail.png")
+            return False
+        log(f"   ✅ 账号已填入（{len(EMAIL)} 字符）")
+
         time.sleep(random.uniform(0.8, 1.5))
         log("⌨️ 输入密码...")
-        pwd_input.click()
-        pwd_input.fill(PASSWORD)
+        if not _fill_verify(pwd_input, PASSWORD, "密码"):
+            log("❌ 密码填入失败（回读为空）")
+            page.screenshot(path="login_pwd_fill_fail.png")
+            return False
+        log(f"   ✅ 密码已填入（{len(PASSWORD)} 字符）")
 
         # --- 按流程等待 8 秒，等第二道 Turnstile 出现 ---
         log("⏳ 输入完成，等待turnstile加载...")
