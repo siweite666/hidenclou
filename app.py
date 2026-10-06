@@ -564,10 +564,14 @@ def login(page):
         # 提交后若再出现 Turnstile，边处理边等待跳转
         solve_turnstile(page, timeout=45, success_check=lambda p: "auth/login" not in p.url,
                         shot_on_timeout="login_turnstile3_fail.png")
-        try:
-            page.wait_for_url(lambda u: "auth/login" not in u, timeout=30000)
-        except Exception:
-            pass
+        # 别死等 URL 变化：SPA 跳转不一定触发 wait_for_url，
+        # 实测白等满 30s（脚本总耗时 107s 里占 1/3）。改短轮询，反正下一步
+        # 就 goto dashboard，登录结果由那时判定。
+        _t = time.time()
+        while time.time() - _t < 8:
+            if "auth/login" not in page.url:
+                break
+            time.sleep(0.5)
 
         page.goto(f"{BASE_URL}/dashboard", wait_until="domcontentloaded", timeout=60000)
         solve_turnstile(page, timeout=60, success_check=page_ready, reload_after=8)
